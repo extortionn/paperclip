@@ -46,6 +46,7 @@ export function agentRoutes(db: Db) {
     codex_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
+    nvidia_api: "instructionsFilePath",
     cursor: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
@@ -238,6 +239,16 @@ export function agentRoutes(db: Db) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "nvidia_api") {
+      const env = asRecord(next.env) ?? {};
+      if (!asNonEmptyString(env.OPENAI_BASE_URL)) {
+        next.env = {
+          ...env,
+          OPENAI_BASE_URL: { type: "plain", value: "https://integrate.api.nvidia.com/v1" },
+        };
+      }
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
@@ -250,9 +261,13 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
+    if (adapterType !== "opencode_local" && adapterType !== "nvidia_api") return;
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+    const explicitExternalBaseUrl = asNonEmptyString(runtimeEnv.OPENAI_BASE_URL);
+    if (explicitExternalBaseUrl) {
+      return;
+    }
     try {
       await ensureOpenCodeModelConfiguredAndAvailable({
         model: runtimeConfig.model,
@@ -262,7 +277,7 @@ export function agentRoutes(db: Db) {
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      throw unprocessable(`Invalid ${adapterType} adapterConfig: ${reason}`);
     }
   }
 
@@ -993,7 +1008,10 @@ export function agentRoutes(db: Db) {
       );
       patchData.adapterConfig = normalizedEffectiveAdapterConfig;
     }
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    if (
+      touchesAdapterConfiguration &&
+      (requestedAdapterType === "opencode_local" || requestedAdapterType === "nvidia_api")
+    ) {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
       await assertAdapterConfigConstraints(
         existing.companyId,

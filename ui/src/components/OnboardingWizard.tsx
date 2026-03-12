@@ -8,6 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
+import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -61,6 +62,13 @@ type AdapterType =
   | "http"
   | "openclaw_gateway";
 
+type ExternalApiProvider = "none" | "nvidia" | "openrouter";
+
+const EXTERNAL_PROVIDER_BASE_URLS: Record<Exclude<ExternalApiProvider, "none">, string> = {
+  nvidia: "https://integrate.api.nvidia.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+};
+
 const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
 
 Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
@@ -101,6 +109,9 @@ export function OnboardingWizard() {
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
+  const [externalApiProvider, setExternalApiProvider] =
+    useState<ExternalApiProvider>("none");
+  const [externalApiKey, setExternalApiKey] = useState("");
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
@@ -255,6 +266,8 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
+    setExternalApiProvider("none");
+    setExternalApiKey("");
     setTaskTitle("Create your CEO HEARTBEAT.md");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
@@ -302,6 +315,29 @@ export function OnboardingWizard() {
       config.env = env;
     }
     return config;
+  }
+
+  function withExternalApiConfig(
+    config: Record<string, unknown>,
+    options: {
+      provider: ExternalApiProvider;
+      plainApiKey?: string;
+      apiKeySecretId?: string;
+    }
+  ): Record<string, unknown> {
+    if (adapterType !== "opencode_local" || options.provider === "none") return config;
+    const baseUrl = EXTERNAL_PROVIDER_BASE_URLS[options.provider];
+    const env =
+      typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+        ? { ...(config.env as Record<string, unknown>) }
+        : {};
+    env.OPENAI_BASE_URL = { type: "plain", value: baseUrl };
+    if (options.apiKeySecretId) {
+      env.OPENAI_API_KEY = { type: "secret_ref", secretId: options.apiKeySecretId };
+    } else if (options.plainApiKey && options.plainApiKey.trim().length > 0) {
+      env.OPENAI_API_KEY = { type: "plain", value: options.plainApiKey.trim() };
+    }
+    return { ...config, env };
   }
 
   async function runAdapterEnvironmentTest(
@@ -369,36 +405,61 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      let adapterConfig = buildAdapterConfig();
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!selectedModelId) {
           setError("OpenCode requires an explicit model in provider/model format.");
           return;
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models.",
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError("OpenCode models are still loading. Please wait and try again.");
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`,
-          );
-          return;
+
+        if (externalApiProvider === "none") {
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models.",
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError("OpenCode models are still loading. Please wait and try again.");
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`,
+            );
+            return;
+          }
+        } else {
+          if (!externalApiKey.trim()) {
+            setError("Enter an API key for the selected external provider.");
+            return;
+          }
+          const probeConfig = withExternalApiConfig(adapterConfig, {
+            provider: externalApiProvider,
+            plainApiKey: externalApiKey,
+          });
+          const probeResult = await runAdapterEnvironmentTest(probeConfig);
+          if (!probeResult) return;
+
+          const secret = await secretsApi.create(createdCompanyId, {
+            name: `onboarding-${externalApiProvider}-api-key-${Date.now()}`,
+            value: externalApiKey.trim(),
+            description: `API key for ${externalApiProvider} endpoint used by onboarding CEO adapter`,
+          });
+          adapterConfig = withExternalApiConfig(adapterConfig, {
+            provider: externalApiProvider,
+            apiKeySecretId: secret.id,
+          });
         }
       }
 
-      if (isLocalAdapter) {
+      if (isLocalAdapter && !(adapterType === "opencode_local" && externalApiProvider !== "none")) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
       }
@@ -407,7 +468,7 @@ export function OnboardingWizard() {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig,
         runtimeConfig: {
           heartbeat: {
             enabled: true,
@@ -863,6 +924,49 @@ export function OnboardingWizard() {
                           </PopoverContent>
                         </Popover>
                       </div>
+                    </div>
+                  )}
+
+                  {adapterType === "opencode_local" && (
+                    <div className="space-y-2 rounded-md border border-border/70 bg-muted/20 px-2.5 py-2">
+                      <label className="text-xs text-muted-foreground block">
+                        External OpenAI-compatible provider (optional)
+                      </label>
+                      <select
+                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                        value={externalApiProvider}
+                        onChange={(e) => setExternalApiProvider(e.target.value as ExternalApiProvider)}
+                      >
+                        <option value="none">Use discovered local/provider models</option>
+                        <option value="nvidia">NVIDIA API</option>
+                        <option value="openrouter">OpenRouter API</option>
+                      </select>
+
+                      {externalApiProvider !== "none" && (
+                        <>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Base URL</label>
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none"
+                              value={EXTERNAL_PROVIDER_BASE_URLS[externalApiProvider]}
+                              readOnly
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">API key</label>
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none"
+                              type="password"
+                              placeholder="Enter API key"
+                              value={externalApiKey}
+                              onChange={(e) => setExternalApiKey(e.target.value)}
+                            />
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              Saved as a company secret and injected as OPENAI_API_KEY.
+                            </p>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 

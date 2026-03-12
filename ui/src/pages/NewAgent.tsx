@@ -31,10 +31,13 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "codex_local",
   "gemini_local",
   "opencode_local",
+  "nvidia_api",
   "pi_local",
   "cursor",
   "openclaw_gateway",
 ]);
+
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -51,8 +54,27 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
+  } else if (adapterType === "nvidia_api") {
+    nextValues.model = "";
+    nextValues.envBindings = {
+      OPENAI_BASE_URL: { type: "plain", value: NVIDIA_BASE_URL },
+    };
   }
   return nextValues;
+}
+
+function hasNvidiaApiKeyBinding(envBindings: Record<string, unknown>): boolean {
+  const candidate = envBindings.OPENAI_API_KEY;
+  if (typeof candidate === "string") return candidate.trim().length > 0;
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+  const rec = candidate as Record<string, unknown>;
+  if (rec.type === "plain") {
+    return typeof rec.value === "string" && rec.value.trim().length > 0;
+  }
+  if (rec.type === "secret_ref") {
+    return typeof rec.secretId === "string" && rec.secretId.trim().length > 0;
+  }
+  return false;
 }
 
 export function NewAgent() {
@@ -141,10 +163,35 @@ export function NewAgent() {
   function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
-    if (configValues.adapterType === "opencode_local") {
+    if (configValues.adapterType === "opencode_local" || configValues.adapterType === "nvidia_api") {
       const selectedModel = configValues.model.trim();
       if (!selectedModel) {
-        setFormError("OpenCode requires an explicit model in provider/model format.");
+        setFormError("This adapter requires an explicit model in provider/model format.");
+        return;
+      }
+      if (configValues.adapterType === "nvidia_api") {
+        if (!hasNvidiaApiKeyBinding(configValues.envBindings)) {
+          setFormError("NVIDIA API adapter requires OPENAI_API_KEY in Environment variables.");
+          return;
+        }
+        createAgent.mutate({
+          name: name.trim(),
+          role: effectiveRole,
+          ...(title.trim() ? { title: title.trim() } : {}),
+          ...(reportsTo ? { reportsTo } : {}),
+          adapterType: configValues.adapterType,
+          adapterConfig: buildAdapterConfig(),
+          runtimeConfig: {
+            heartbeat: {
+              enabled: configValues.heartbeatEnabled,
+              intervalSec: configValues.intervalSec,
+              wakeOnDemand: true,
+              cooldownSec: 10,
+              maxConcurrentRuns: 1,
+            },
+          },
+          budgetMonthlyCents: 0,
+        });
         return;
       }
       if (adapterModelsError) {

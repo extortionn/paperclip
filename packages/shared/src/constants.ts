@@ -28,6 +28,7 @@ export const AGENT_ADAPTER_TYPES = [
   "codex_local",
   "gemini_local",
   "opencode_local",
+  "nvidia_api",
   "pi_local",
   "cursor",
   "openclaw_gateway",

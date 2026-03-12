@@ -110,6 +110,8 @@ function isOverlayDirty(o: Overlay): boolean {
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
+
 function parseCommaArgs(value: string): string[] {
   return value
     .split(",")
@@ -285,6 +287,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "nvidia_api" ||
     adapterType === "cursor";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
@@ -355,7 +358,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "modelReasoningEffort"
       : adapterType === "cursor"
         ? "mode"
-        : adapterType === "opencode_local"
+        : adapterType === "opencode_local" || adapterType === "nvidia_api"
           ? "variant"
           : "effort";
   const thinkingEffortOptions =
@@ -363,7 +366,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? codexThinkingEffortOptions
       : adapterType === "cursor"
         ? cursorModeOptions
-        : adapterType === "opencode_local"
+        : adapterType === "opencode_local" || adapterType === "nvidia_api"
           ? openCodeThinkingEffortOptions
           : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
@@ -376,7 +379,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         )
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
-      : adapterType === "opencode_local"
+      : adapterType === "opencode_local" || adapterType === "nvidia_api"
         ? eff("adapterConfig", "variant", String(config.variant ?? ""))
       : eff("adapterConfig", "effort", String(config.effort ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local";
@@ -503,6 +506,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                   } else if (t === "opencode_local") {
                     nextValues.model = "";
+                  } else if (t === "nvidia_api") {
+                    nextValues.model = "";
+                    nextValues.envBindings = {
+                      OPENAI_BASE_URL: { type: "plain", value: NVIDIA_BASE_URL },
+                    };
                   }
                   set!(nextValues);
                 } else {
@@ -524,6 +532,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       modelReasoningEffort: "",
                       variant: "",
                       mode: "",
+                      ...(t === "nvidia_api"
+                        ? {
+                            env: {
+                              OPENAI_BASE_URL: { type: "plain", value: NVIDIA_BASE_URL },
+                            },
+                          }
+                        : {}),
                       ...(t === "codex_local"
                         ? {
                             dangerouslyBypassApprovalsAndSandbox:
@@ -626,27 +641,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         ? "gemini"
                       : adapterType === "cursor"
                         ? "agent"
-                        : adapterType === "opencode_local"
+                        : adapterType === "opencode_local" || adapterType === "nvidia_api"
                           ? "opencode"
                           : "claude"
                   }
                 />
               </Field>
 
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-              />
+              {adapterType === "nvidia_api" ? (
+                <Field label="Model" hint={help.model}>
+                  <DraftInput
+                    value={currentModelId}
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ model: v })
+                        : mark("adapterConfig", "model", v || undefined)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder="e.g. qwen/qwen3.5-122b-a10b"
+                  />
+                </Field>
+              ) : (
+                <ModelDropdown
+                  models={models}
+                  value={currentModelId}
+                  onChange={(v) =>
+                    isCreate
+                      ? set!({ model: v })
+                      : mark("adapterConfig", "model", v || undefined)
+                  }
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
+                  allowDefault={adapterType !== "opencode_local"}
+                  required={adapterType === "opencode_local"}
+                  groupByProvider={adapterType === "opencode_local"}
+                />
+              )}
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
                   {fetchedModelsError instanceof Error
@@ -911,7 +942,14 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "gemini_local",
+  "opencode_local",
+  "nvidia_api",
+  "cursor",
+]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
@@ -934,7 +972,9 @@ function AdapterTypeDropdown({
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
-            {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
+            {value === "opencode_local" || value === "nvidia_api" ? (
+              <OpenCodeLogoIcon className="h-3.5 w-3.5" />
+            ) : null}
             <span>{adapterLabels[value] ?? value}</span>
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -957,7 +997,9 @@ function AdapterTypeDropdown({
             }}
           >
             <span className="inline-flex items-center gap-1.5">
-              {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
+              {item.value === "opencode_local" || item.value === "nvidia_api" ? (
+                <OpenCodeLogoIcon className="h-3.5 w-3.5" />
+              ) : null}
               <span>{item.label}</span>
             </span>
             {item.comingSoon && (

@@ -116,6 +116,17 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const nvidiaApiAdapter: ServerAdapterModule = {
+  type: "nvidia_api",
+  execute: openCodeExecute,
+  testEnvironment: openCodeTestEnvironment,
+  sessionCodec: openCodeSessionCodec,
+  models: [],
+  listModels: listOpenCodeModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: openCodeAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   execute: piExecute,
@@ -132,6 +143,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
+    nvidiaApiAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,

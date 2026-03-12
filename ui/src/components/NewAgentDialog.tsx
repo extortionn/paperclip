@@ -27,6 +27,7 @@ type AdvancedAdapterType =
   | "codex_local"
   | "gemini_local"
   | "opencode_local"
+  | "nvidia_api"
   | "pi_local"
   | "cursor"
   | "openclaw_gateway";
@@ -63,6 +64,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenCode",
     icon: OpenCodeLogoIcon,
     desc: "Local multi-provider agent",
+  },
+  {
+    value: "nvidia_api",
+    label: "NVIDIA API",
+    icon: OpenCodeLogoIcon,
+    desc: "OpenAI-compatible NVIDIA endpoint",
   },
   {
     value: "pi_local",
